@@ -1,22 +1,50 @@
 const { Ed25519Keypair } = require('@mysten/sui.js/keypairs/ed25519');
+const { SuiClient, getFullnodeUrl } = require('@mysten/sui.js/client');
 const fs = require('fs');
 const axios = require('axios');
 const readline = require('readline');
 
-// Konfigurasi
+// ============ KONFIGURASI ============
+
 const CONFIG = {
-  FILES: {
-    USER_AGENTS: 'user_agents.txt',
-    REFERRAL_CODES: 'code.txt',
-    PROXY: 'proxy.txt'
-  }
+  RPC_URL: getFullnodeUrl('testnet'),
+  
+  // Jumlah Claim per Token
+  XAUM_CLAIM_AMOUNT: 10,
+  USDC_CLAIM_AMOUNT: 10,
+  
+  // SUI Faucet Config
+  SUI_FAUCET_URL: 'https://faucet.testnet.sui.io/v2/gas',
+  SUI_FAUCET_RETRIES: 50,
+  MIN_SUI_BALANCE: 1,
+  MIST_PER_SUI: 1000000000,
+  
+  // Files
+  USER_AGENTS_FILE: 'user_agents.txt',
+  REFERRAL_CODES_FILE: 'code.txt',
+  
+  // Contract Package (sama untuk XAUM dan USDC)
+  PACKAGE: '0xa03cb0b29e92c6fa9bfb7b9c57ffdba5e23810f20885b4390f724553d32efb8b',
+  
+  // XAUM Contract Info
+  XAUM_SHARED_OBJECT: '0x66984752afbd878aaee450c70142747bb31fca2bb63f0a083d75c361da39adb1',
+  XAUM_MINT_AMOUNT: '1000000000',
+  
+  // USDC Contract Info
+  USDC_SHARED_OBJECT: '0x77153159c4e3933658293a46187c30ef68a8f98aa48b0ce76ffb0e6d20c0776b',
+  USDC_MINT_AMOUNT: '10000000000',
+  
+  GAS_BUDGET: '100000000'
 };
+
+// Inisialisasi Sui Client
+const suiClient = new SuiClient({ url: CONFIG.RPC_URL });
 
 // Variable global
 let USER_AGENTS = [];
-let PROXIES = [];
 
-// Fungsi input
+// ============ UTILITY FUNCTIONS ============
+
 function question(query) {
   const rl = readline.createInterface({
     input: process.stdin,
@@ -29,21 +57,18 @@ function question(query) {
   }));
 }
 
-// Random delay
 function getRandomDelay(minSec, maxSec) {
   const min = minSec * 1000;
   const max = maxSec * 1000;
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
-// Delay
 async function delay(ms, message = 'Waiting') {
   const seconds = Math.floor(ms / 1000);
   console.log(`⏳ ${message} ${seconds} seconds...`);
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// Baca file
 function readFileLines(filename, shouldFilter = true) {
   try {
     if (!fs.existsSync(filename)) {
@@ -64,21 +89,6 @@ function readFileLines(filename, shouldFilter = true) {
   }
 }
 
-// Generate wallet
-function generateRandomWallet() {
-  try {
-    const keypair = new Ed25519Keypair();
-    const privateKey = keypair.export().privateKey;
-    const address = keypair.getPublicKey().toSuiAddress();
-    const privateKeyStr = `suiprivkey${Buffer.from(privateKey).toString('base64')}`;
-    return { privateKey: privateKeyStr, address };
-  } catch (error) {
-    console.error('❌ Error generating wallet:', error.message);
-    return null;
-  }
-}
-
-// Simpan ke file
 function saveToFile(filename, content) {
   try {
     fs.appendFileSync(filename, content + '\n', 'utf8');
@@ -87,13 +97,6 @@ function saveToFile(filename, content) {
   }
 }
 
-// Get proxy by index
-function getProxyByIndex(index) {
-  if (PROXIES.length === 0) return null;
-  return PROXIES[index % PROXIES.length];
-}
-
-// Get random user agent
 function getRandomUserAgent() {
   if (USER_AGENTS.length === 0) {
     return 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
@@ -101,8 +104,31 @@ function getRandomUserAgent() {
   return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
 }
 
-// Register wallet
-async function registerWallet(walletAddress, inviteCode, proxyUrl, globalCounter) {
+// ✅ GENERATE WALLET DENGAN FORMAT BENAR (70 CHAR)
+function generateRandomWallet() {
+  try {
+    const keypair = new Ed25519Keypair();
+    const secretKey = keypair.export().privateKey;
+    const address = keypair.getPublicKey().toSuiAddress();
+    
+    // ✅ Format yang BENAR: suiprivkey1 + base64(secretKey) = 70 chars total
+    const base64Key = Buffer.from(secretKey).toString('base64');
+    const privateKeyStr = `suiprivkey1${base64Key}`;
+    
+    // Validasi panjang
+    if (privateKeyStr.length !== 70) {
+      console.error(`❌ Private key length error: ${privateKeyStr.length} (should be 70)`);
+      return null;
+    }
+    
+    return { privateKey: privateKeyStr, address, keypair };
+  } catch (error) {
+    console.error('❌ Error generating wallet:', error.message);
+    return null;
+  }
+}
+
+async function registerWallet(walletAddress, inviteCode) {
   try {
     const axiosConfig = {
       timeout: 30000,
@@ -112,19 +138,6 @@ async function registerWallet(walletAddress, inviteCode, proxyUrl, globalCounter
       }
     };
     
-    // Proxy support dengan try-catch
-    if (proxyUrl) {
-      try {
-        const HttpProxyAgent = require('http-proxy-agent');
-        const HttpsProxyAgent = require('https-proxy-agent');
-        const proxyWithProtocol = proxyUrl.startsWith('http') ? proxyUrl : `http://${proxyUrl}`;
-        axiosConfig.httpAgent = new HttpProxyAgent(proxyWithProtocol);
-        axiosConfig.httpsAgent = new HttpsProxyAgent(proxyWithProtocol);
-      } catch (e) {
-        // Skip proxy jika error
-      }
-    }
-    
     const response = await axios.post('https://api-test.creek.finance/api/user/connect', {
       walletAddress: walletAddress,
       inviteCode: inviteCode
@@ -133,31 +146,21 @@ async function registerWallet(walletAddress, inviteCode, proxyUrl, globalCounter
     const result = response.data;
     
     if (result.code === 0 && result.success && result.data && result.data.user) {
-      const user = result.data.user;
-      console.log(`  ✓ Registrasi berhasil!`);
-      console.log(`    Wallet: ${user.wallet_address.substring(0, 12)}...`);
-      return user.invite_code;
+      return result.data.user;
     } else {
-      console.log(`  ❌ Registrasi gagal: ${result.msg}`);
       return null;
     }
   } catch (error) {
-    console.error(`  ❌ Error: ${error.message}`);
     return null;
   }
 }
 
-// Process single wallet
-async function processWallet(refCode, walletIdx, totalWalletsPerCode, globalCounter) {
-  console.log(`\n  [Wallet ${walletIdx}/${totalWalletsPerCode}] Global: ${globalCounter}`);
+// ============ PROCESS WALLET ============
+
+async function processWallet(refCode, walletIdx, totalWalletsPerCode, globalWalletCount) {
+  console.log(`\n  [Wallet ${walletIdx}/${totalWalletsPerCode}] Global: ${globalWalletCount}`);
   
-  // Get proxy
-  const proxy = getProxyByIndex(globalCounter - 1);
-  if (proxy) {
-    console.log(`  🌐 Proxy: ${proxy}`);
-  }
-  
-  // Generate wallet
+  // Generate wallet dengan format BENAR
   const wallet = generateRandomWallet();
   if (!wallet) {
     console.log(`  ❌ Gagal generate wallet\n`);
@@ -165,47 +168,41 @@ async function processWallet(refCode, walletIdx, totalWalletsPerCode, globalCoun
   }
   
   console.log(`  📍 Address: ${wallet.address}`);
+  console.log(`  🔑 Private Key Length: ${wallet.privateKey.length} chars ✓`);
   
   // Registrasi
   console.log(`  📝 Registrasi...`);
-  const newInviteCode = await registerWallet(wallet.address, refCode, proxy, globalCounter);
+  const newUser = await registerWallet(wallet.address, refCode);
   
-  if (!newInviteCode) {
+  if (!newUser) {
     console.log(`  ❌ Registrasi gagal\n`);
     return null;
   }
   
-  // Simpan data
-  saveToFile('generated.txt', wallet.privateKey);
-  saveToFile('codereff.txt', newInviteCode);
+  console.log(`  ✓ Registrasi berhasil!`);
+  console.log(`    Invite Code: ${newUser.invite_code}`);
+  console.log(`    Points: ${newUser.total_points}`);
   
-  if (proxy) {
-    saveToFile('proxy_mapping.txt', `${wallet.address}|${proxy}`);
-  }
+  // Simpan data dengan format BENAR
+  saveToFile('generated.txt', wallet.privateKey);
+  saveToFile('codereff.txt', newUser.invite_code);
   
   console.log(`  ✅ Wallet berhasil!\n`);
-  return { success: true, inviteCode: newInviteCode };
+  return { success: true, inviteCode: newUser.invite_code };
 }
 
-// Main
+// ============ MAIN MENU ============
+
 async function main() {
   console.log('\n╔═══════════════════════════════════════════════╗');
   console.log('║     AUTO REGISTRASI REFERRAL - CREEK.FI      ║');
-  console.log('║         (Fixed Wallets Per Code)              ║');
+  console.log('║   Generate Private Key Format Benar (70 ch)  ║');
   console.log('╚═══════════════════════════════════════════════╝\n');
 
-  // Load data
+  // Load user agents
   console.log('📱 Loading User Agents...');
-  USER_AGENTS = readFileLines(CONFIG.FILES.USER_AGENTS);
+  USER_AGENTS = readFileLines(CONFIG.USER_AGENTS_FILE);
   console.log(`✓ Loaded ${USER_AGENTS.length} user agents\n`);
-  
-  console.log('🌐 Loading Proxies...');
-  PROXIES = readFileLines(CONFIG.FILES.PROXY);
-  if (PROXIES.length > 0) {
-    console.log(`✓ Loaded ${PROXIES.length} proxies\n`);
-  } else {
-    console.log(`⚠ Akan berjalan tanpa proxy\n`);
-  }
 
   // Input target
   const walletsPerCodeInput = await question('💬 Masukkan jumlah wallet per code: ');
@@ -217,7 +214,7 @@ async function main() {
   }
 
   // Baca referral codes
-  const referralCodes = readFileLines(CONFIG.FILES.REFERRAL_CODES);
+  const referralCodes = readFileLines(CONFIG.REFERRAL_CODES_FILE);
   
   if (referralCodes.length === 0) {
     console.log('❌ File code.txt kosong!');
@@ -227,10 +224,10 @@ async function main() {
   const totalWallets = walletsPerCode * referralCodes.length;
   
   console.log(`\n📋 Konfigurasi:`);
-  console.log(`   Jumlah per Code: ${walletsPerCode} wallets`);
+  console.log(`   Wallet per Code: ${walletsPerCode}`);
   console.log(`   Total Codes: ${referralCodes.length}`);
   console.log(`   Total Wallets: ${totalWallets}`);
-  console.log(`   Proxies: ${PROXIES.length}\n`);
+  console.log(`   Private Key Format: suiprivkey1 (70 chars) ✓\n`);
   
   console.log(`📝 Referral Codes:`);
   referralCodes.forEach((code, idx) => {
@@ -256,7 +253,7 @@ async function main() {
     let codeSuccess = 0;
     let codeFail = 0;
 
-    // Process wallets untuk code ini (FIXED JUMLAH)
+    // Process wallets untuk code ini
     for (let walletIdx = 1; walletIdx <= walletsPerCode; walletIdx++) {
       globalWalletCounter++;
       
@@ -283,7 +280,7 @@ async function main() {
     console.log(`   ❌ Gagal: ${codeFail}/${walletsPerCode}`);
     console.log(`   📊 Progress Global: ${globalSuccess}/${totalWallets}\n`);
     
-    // Delay antar code (lebih lama)
+    // Delay antar code
     if (!isLastCode) {
       console.log(`⏸ Istirahat sebelum code berikutnya...`);
       await delay(getRandomDelay(60, 120), 'Delay antar code:');
@@ -301,11 +298,8 @@ async function main() {
   console.log(`   ❌ Gagal Total: ${globalFail}\n`);
   
   console.log(`📂 File Output:`);
-  console.log(`   - generated.txt: ${globalSuccess} private keys`);
-  console.log(`   - codereff.txt: ${globalSuccess} invite codes`);
-  if (PROXIES.length > 0) {
-    console.log(`   - proxy_mapping.txt: wallet-proxy mapping\n`);
-  }
+  console.log(`   - generated.txt: ${globalSuccess} private keys (FORMAT BENAR 70 CHAR)`);
+  console.log(`   - codereff.txt: ${globalSuccess} invite codes\n`);
 }
 
 main().catch(error => {
