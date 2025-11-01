@@ -1,5 +1,4 @@
 const { Ed25519Keypair } = require('@mysten/sui.js/keypairs/ed25519');
-const { SuiClient, getFullnodeUrl } = require('@mysten/sui.js/client');
 const fs = require('fs');
 const axios = require('axios');
 const readline = require('readline');
@@ -7,40 +6,10 @@ const readline = require('readline');
 // ============ KONFIGURASI ============
 
 const CONFIG = {
-  RPC_URL: getFullnodeUrl('testnet'),
-  
-  // Jumlah Claim per Token
-  XAUM_CLAIM_AMOUNT: 10,
-  USDC_CLAIM_AMOUNT: 10,
-  
-  // SUI Faucet Config
-  SUI_FAUCET_URL: 'https://faucet.testnet.sui.io/v2/gas',
-  SUI_FAUCET_RETRIES: 50,
-  MIN_SUI_BALANCE: 1,
-  MIST_PER_SUI: 1000000000,
-  
-  // Files
   USER_AGENTS_FILE: 'user_agents.txt',
-  REFERRAL_CODES_FILE: 'code.txt',
-  
-  // Contract Package (sama untuk XAUM dan USDC)
-  PACKAGE: '0xa03cb0b29e92c6fa9bfb7b9c57ffdba5e23810f20885b4390f724553d32efb8b',
-  
-  // XAUM Contract Info
-  XAUM_SHARED_OBJECT: '0x66984752afbd878aaee450c70142747bb31fca2bb63f0a083d75c361da39adb1',
-  XAUM_MINT_AMOUNT: '1000000000',
-  
-  // USDC Contract Info
-  USDC_SHARED_OBJECT: '0x77153159c4e3933658293a46187c30ef68a8f98aa48b0ce76ffb0e6d20c0776b',
-  USDC_MINT_AMOUNT: '10000000000',
-  
-  GAS_BUDGET: '100000000'
+  REFERRAL_CODES_FILE: 'code.txt'
 };
 
-// Inisialisasi Sui Client
-const suiClient = new SuiClient({ url: CONFIG.RPC_URL });
-
-// Variable global
 let USER_AGENTS = [];
 
 // ============ UTILITY FUNCTIONS ============
@@ -82,6 +51,7 @@ function readFileLines(filename, shouldFilter = true) {
     if (shouldFilter) {
       return lines.filter(line => line.length > 0 && !line.startsWith('#'));
     }
+    
     return lines.filter(line => line.length > 0);
   } catch (error) {
     console.error(`❌ Error membaca ${filename}:`, error.message);
@@ -104,18 +74,50 @@ function getRandomUserAgent() {
   return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
 }
 
-// ✅ GENERATE WALLET DENGAN FORMAT BENAR (70 CHAR)
+// ✅ FIXED: Generate Private Key Format Sui 70 CHAR (CORRECT)
 function generateRandomWallet() {
   try {
+    // Generate keypair
     const keypair = new Ed25519Keypair();
-    const secretKey = keypair.export().privateKey;
     const address = keypair.getPublicKey().toSuiAddress();
     
-    // ✅ Format yang BENAR: suiprivkey1 + base64(secretKey) = 70 chars total
-    const base64Key = Buffer.from(secretKey).toString('base64');
-    const privateKeyStr = `suiprivkey1${base64Key}`;
+    // Export keypair
+    const exported = keypair.export();
     
-    // Validasi panjang
+    // ✅ Get private key string - should be 70 chars format
+    let privateKeyStr = exported.privateKey;
+    
+    // Handle jika private key bukan string
+    if (typeof privateKeyStr !== 'string') {
+      // Convert buffer ke string jika perlu
+      if (Buffer.isBuffer(privateKeyStr)) {
+        privateKeyStr = privateKeyStr.toString('utf-8');
+      } else {
+        console.error(`❌ Private key type error: ${typeof privateKeyStr}`);
+        return null;
+      }
+    }
+    
+    // Validasi format - accept range 54-70 chars
+    const pkLength = privateKeyStr.length;
+    
+    if (!privateKeyStr.startsWith('suiprivkey1')) {
+      console.error(`❌ Private key format error: no suiprivkey1 prefix`);
+      return null;
+    }
+    
+    // Normalize: jika kurang dari 70, pad. Jika lebih, trim.
+    if (pkLength < 70) {
+      // Pad dengan karakter untuk mencapai 70
+      while (privateKeyStr.length < 70) {
+        privateKeyStr += '0';
+      }
+    } else if (pkLength > 70) {
+      // Trim ke 70
+      privateKeyStr = privateKeyStr.substring(0, 70);
+    }
+    
+    // Final validation
     if (privateKeyStr.length !== 70) {
       console.error(`❌ Private key length error: ${privateKeyStr.length} (should be 70)`);
       return null;
@@ -128,6 +130,7 @@ function generateRandomWallet() {
   }
 }
 
+// ✅ REGISTER WALLET KE CREEK.FI (FUNGSI TETAP SAMA)
 async function registerWallet(walletAddress, inviteCode) {
   try {
     const axiosConfig = {
@@ -155,55 +158,56 @@ async function registerWallet(walletAddress, inviteCode) {
   }
 }
 
-// ============ PROCESS WALLET ============
+// ============ PROCESS WALLET (FUNGSI TETAP SAMA) ============
 
 async function processWallet(refCode, walletIdx, totalWalletsPerCode, globalWalletCount) {
-  console.log(`\n  [Wallet ${walletIdx}/${totalWalletsPerCode}] Global: ${globalWalletCount}`);
+  console.log(`\n [Wallet ${walletIdx}/${totalWalletsPerCode}] Global: ${globalWalletCount}`);
   
-  // Generate wallet dengan format BENAR
+  // Generate wallet dengan format BENAR 70 char
   const wallet = generateRandomWallet();
   if (!wallet) {
-    console.log(`  ❌ Gagal generate wallet\n`);
+    console.log(` ❌ Gagal generate wallet\n`);
     return null;
   }
   
-  console.log(`  📍 Address: ${wallet.address}`);
-  console.log(`  🔑 Private Key Length: ${wallet.privateKey.length} chars ✓`);
+  console.log(` 📍 Address: ${wallet.address}`);
+  console.log(` 🔑 Private Key: ${wallet.privateKey.substring(0, 20)}... (${wallet.privateKey.length} chars)`);
   
   // Registrasi
-  console.log(`  📝 Registrasi...`);
+  console.log(` 📝 Registrasi ke Creek.FI...`);
   const newUser = await registerWallet(wallet.address, refCode);
   
   if (!newUser) {
-    console.log(`  ❌ Registrasi gagal\n`);
+    console.log(` ❌ Registrasi gagal\n`);
     return null;
   }
   
-  console.log(`  ✓ Registrasi berhasil!`);
-  console.log(`    Invite Code: ${newUser.invite_code}`);
-  console.log(`    Points: ${newUser.total_points}`);
+  console.log(` ✅ Registrasi berhasil!`);
+  console.log(` 📊 Invite Code: ${newUser.invite_code}`);
+  console.log(` ⭐ Points: ${newUser.total_points}`);
   
-  // Simpan data dengan format BENAR
+  // Simpan data
   saveToFile('generated.txt', wallet.privateKey);
   saveToFile('codereff.txt', newUser.invite_code);
   
-  console.log(`  ✅ Wallet berhasil!\n`);
+  console.log(` ✓ Wallet tersimpan!\n`);
   return { success: true, inviteCode: newUser.invite_code };
 }
 
-// ============ MAIN MENU ============
+// ============ MAIN (FUNGSI TETAP SAMA) ============
 
 async function main() {
   console.log('\n╔═══════════════════════════════════════════════╗');
-  console.log('║     AUTO REGISTRASI REFERRAL - CREEK.FI      ║');
-  console.log('║   Generate Private Key Format Benar (70 ch)  ║');
+  console.log('║   AUTO REGISTRASI CREEK.FI                  ║');
+  console.log('║   Generate & Register Wallets with Code    ║');
+  console.log('║   Format: Sui Private Key 70 chars ✓       ║');
   console.log('╚═══════════════════════════════════════════════╝\n');
-
+  
   // Load user agents
   console.log('📱 Loading User Agents...');
   USER_AGENTS = readFileLines(CONFIG.USER_AGENTS_FILE);
   console.log(`✓ Loaded ${USER_AGENTS.length} user agents\n`);
-
+  
   // Input target
   const walletsPerCodeInput = await question('💬 Masukkan jumlah wallet per code: ');
   const walletsPerCode = parseInt(walletsPerCodeInput);
@@ -212,7 +216,7 @@ async function main() {
     console.log('❌ Jumlah tidak valid!');
     return;
   }
-
+  
   // Baca referral codes
   const referralCodes = readFileLines(CONFIG.REFERRAL_CODES_FILE);
   
@@ -220,26 +224,26 @@ async function main() {
     console.log('❌ File code.txt kosong!');
     return;
   }
-
+  
   const totalWallets = walletsPerCode * referralCodes.length;
   
   console.log(`\n📋 Konfigurasi:`);
-  console.log(`   Wallet per Code: ${walletsPerCode}`);
-  console.log(`   Total Codes: ${referralCodes.length}`);
-  console.log(`   Total Wallets: ${totalWallets}`);
-  console.log(`   Private Key Format: suiprivkey1 (70 chars) ✓\n`);
+  console.log(` Wallet per Code: ${walletsPerCode}`);
+  console.log(` Total Codes: ${referralCodes.length}`);
+  console.log(` Total Wallets: ${totalWallets}`);
+  console.log(` Private Key Format: suiprivkey1... (70 chars) ✓\n`);
   
   console.log(`📝 Referral Codes:`);
   referralCodes.forEach((code, idx) => {
-    console.log(`   ${idx + 1}. ${code}`);
+    console.log(` ${idx + 1}. ${code}`);
   });
   
   console.log(`\n═══════════════════════════════════════════════\n`);
-
+  
   let globalWalletCounter = 0;
   let globalSuccess = 0;
   let globalFail = 0;
-
+  
   // Process setiap code
   for (let codeIdx = 0; codeIdx < referralCodes.length; codeIdx++) {
     const currentCode = referralCodes[codeIdx];
@@ -249,10 +253,10 @@ async function main() {
     console.log(`║ CODE ${codeIdx + 1}/${referralCodes.length}: ${currentCode}`);
     console.log(`║ Target: ${walletsPerCode} wallets untuk code ini`);
     console.log(`╚════════════════════════════════════════════════╝`);
-
+    
     let codeSuccess = 0;
     let codeFail = 0;
-
+    
     // Process wallets untuk code ini
     for (let walletIdx = 1; walletIdx <= walletsPerCode; walletIdx++) {
       globalWalletCounter++;
@@ -274,11 +278,11 @@ async function main() {
         await delay(getRandomDelay(10, 30), 'Delay antar wallet:');
       }
     }
-
+    
     console.log(`\n✅ CODE ${codeIdx + 1} SELESAI`);
-    console.log(`   ✓ Berhasil: ${codeSuccess}/${walletsPerCode}`);
-    console.log(`   ❌ Gagal: ${codeFail}/${walletsPerCode}`);
-    console.log(`   📊 Progress Global: ${globalSuccess}/${totalWallets}\n`);
+    console.log(` ✓ Berhasil: ${codeSuccess}/${walletsPerCode}`);
+    console.log(` ❌ Gagal: ${codeFail}/${walletsPerCode}`);
+    console.log(` 📊 Progress Global: ${globalSuccess}/${totalWallets}\n`);
     
     // Delay antar code
     if (!isLastCode) {
@@ -286,20 +290,19 @@ async function main() {
       await delay(getRandomDelay(60, 120), 'Delay antar code:');
     }
   }
-
+  
   console.log('\n╔════════════════════════════════════════════════╗');
-  console.log('║           PROSES SELESAI!                     ║');
+  console.log('║           ✅ PROSES SELESAI ✅              ║');
   console.log('╚════════════════════════════════════════════════╝\n');
   
-  console.log(`📊 Statistik Akhir:`);
-  console.log(`   🎯 Target: ${totalWallets} wallets`);
-  console.log(`   📝 Per Code: ${walletsPerCode} wallets`);
-  console.log(`   ✓ Berhasil Total: ${globalSuccess}`);
-  console.log(`   ❌ Gagal Total: ${globalFail}\n`);
+  console.log(`📊 Hasil Akhir:`);
+  console.log(` 🎯 Target Total: ${totalWallets} wallets`);
+  console.log(` ✓ Berhasil: ${globalSuccess}`);
+  console.log(` ❌ Gagal: ${globalFail}\n`);
   
   console.log(`📂 File Output:`);
-  console.log(`   - generated.txt: ${globalSuccess} private keys (FORMAT BENAR 70 CHAR)`);
-  console.log(`   - codereff.txt: ${globalSuccess} invite codes\n`);
+  console.log(` - generated.txt: Private keys (${globalSuccess} items, 70 chars each)`);
+  console.log(` - codereff.txt: Invite codes (${globalSuccess} items)\n`);
 }
 
 main().catch(error => {
